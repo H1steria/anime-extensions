@@ -1912,6 +1912,24 @@
     ]
   },
   {
+    "name": "Aniyomi: Miruro.tv",
+    "pkg": "eu.kanade.tachiyomi.animeextension.en.miruro",
+    "apk": "aniyomi-en.miruro-v14.6-debug.apk",
+    "lang": "en",
+    "code": 6,
+    "version": "14.6",
+    "nsfw": 1,
+    "sources": [
+      {
+        "name": "Miruro.tv",
+        "lang": "en",
+        "id": "4467610354363305307",
+        "baseUrl": "https://www.miruro.tv",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: MKissa",
     "pkg": "eu.kanade.tachiyomi.animeextension.en.mkissa",
     "apk": "aniyomi-en.mkissa-v14.61.apk",
