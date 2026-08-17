@@ -665,11 +665,11 @@ class Miruro :
 
     private val defaultConfig = ConfigResponseDto(
         streaming = mapOf(
-            "kiwi" to ConfigResponseDto.ProviderConfigDto(
-                capabilities = ConfigResponseDto.ProviderCapabilitiesDto(sub = true, download = true),
-            ),
             "bee" to ConfigResponseDto.ProviderConfigDto(
                 capabilities = ConfigResponseDto.ProviderCapabilitiesDto(sub = true, ssub = true),
+            ),
+            "kiwi" to ConfigResponseDto.ProviderConfigDto(
+                capabilities = ConfigResponseDto.ProviderCapabilitiesDto(sub = true, download = true),
             ),
             "bonk" to ConfigResponseDto.ProviderConfigDto(
                 capabilities = ConfigResponseDto.ProviderCapabilitiesDto(sub = true, ssub = true, download = true, skipTimes = true),
@@ -727,8 +727,8 @@ class Miruro :
         private const val PREF_PROVIDER_TITLE = "Preferred Provider"
 
         private val DEFAULT_PROVIDER_ENTRIES = listOf(
-            "AnimePahe (Sub, Download)",
             "Anikoto (Sub, Soft Sub)",
+            "AnimePahe (Sub, Download)",
             "AniDao (Soft Sub, Download)",
             "9Anime (Sub, Download)",
             "Moon (Sub, Download)",
@@ -739,12 +739,12 @@ class Miruro :
             "Twin (Soft Sub, Embed)",
             "Cog (Hard Sub, Embed)",
         )
-        private val DEFAULT_PROVIDER_VALUES = listOf("kiwi", "bee", "bonk", "ally", "moo", "hop", "pewe", "nun", "bun", "twin", "cog")
-        private const val PREF_PROVIDER_DEFAULT = "kiwi"
+        private val DEFAULT_PROVIDER_VALUES = listOf("bee", "kiwi", "bonk", "ally", "moo", "hop", "pewe", "nun", "bun", "twin", "cog")
+        private const val PREF_PROVIDER_DEFAULT = "bee"
 
         private val KNOWN_DISPLAY_NAMES = mapOf(
-            "kiwi" to "AnimePahe",
             "bee" to "Anikoto",
+            "kiwi" to "AnimePahe",
             "hop" to "Zoro",
             "ally" to "9Anime",
             "bonk" to "AniDao",
@@ -768,7 +768,7 @@ class Miruro :
         private const val PREF_STREAM_TYPE_TITLE = "Preferred Stream Type"
         private val PREF_STREAM_TYPE_ENTRIES = listOf("HLS", "Embed", "All")
         private val PREF_STREAM_TYPE_VALUES = listOf("hls", "embed", "all")
-        private const val PREF_STREAM_TYPE_DEFAULT = "hls"
+        private const val PREF_STREAM_TYPE_DEFAULT = "all"
 
         private const val PREF_QUALITY_KEY = "preferred_quality"
         private const val PREF_QUALITY_TITLE = "Preferred Quality"
@@ -812,7 +812,7 @@ class Miruro :
 
         private const val PREF_INCLUDE_ALL_PROVIDERS_KEY = "include_all_providers"
         private const val PREF_INCLUDE_ALL_PROVIDERS_TITLE = "Include all provider streams"
-        private const val PREF_INCLUDE_ALL_PROVIDERS_DEFAULT = false
+        private const val PREF_INCLUDE_ALL_PROVIDERS_DEFAULT = true
 
         private const val PREF_FILLER_DISPLAY_KEY = "filler_display_mode"
         private const val PREF_FILLER_DISPLAY_TITLE = "Filler Episode Handling"
@@ -1685,6 +1685,19 @@ class Miruro :
 
     private fun getMeta(anilistId: Int): AnimeMeta? = animeMetaCache[anilistId]
 
+    override suspend fun getVideoList(episode: SEpisode): List<Video> = try {
+        val response = client.newCall(videoListRequest(episode)).awaitSuccess()
+        videoListParse(response)
+    } catch (e: Exception) {
+        Log.w(TAG, "getVideoList: primary provider request failed (${e.message}), attempting fallback providers")
+        val episodeData = runCatching { JSONObject(episode.url) }.getOrNull()
+        val fallbackVideos = fetchFallbackVideosFromData(episodeData)
+        if (fallbackVideos.isEmpty()) {
+            throw e
+        }
+        fallbackVideos
+    }
+
     override fun videoListRequest(episode: SEpisode): Request {
         val episodeData = JSONObject(episode.url)
         val query = buildPipeQuery(
@@ -1694,6 +1707,39 @@ class Miruro :
             "_ep" to episode.url,
         )
         return buildPipeRequest("sources", "GET", query = query)
+    }
+
+    private fun fetchFallbackVideosFromData(episodeData: JSONObject?): List<Video> {
+        if (episodeData == null) return emptyList()
+        val fallbackProvidersObj = episodeData.optJSONObject("fallbackProviders") ?: return emptyList()
+        if (fallbackProvidersObj.length() == 0) return emptyList()
+        val anilistId = episodeData.optString("anilistId", "")
+
+        return fallbackProvidersObj.keys().asSequence().toList().parallelCatchingFlatMapBlocking { fbProvider ->
+            val fbSubTypes = fallbackProvidersObj.optJSONObject(fbProvider) ?: return@parallelCatchingFlatMapBlocking emptyList()
+            val fbRequests = mutableListOf<Pair<String, String>>()
+            for (subTypeKey in fbSubTypes.keys()) {
+                val fbEpId = fbSubTypes.optString(subTypeKey, "")
+                if (fbEpId.isEmpty()) continue
+                fbRequests.add(subTypeKey to fbEpId)
+            }
+            logD { "fetchFallbackVideos: trying fallback provider '$fbProvider' with ${fbRequests.size} sub-types" }
+            fbRequests.parallelCatchingFlatMapBlocking { (subTypeKey, fbEpId) ->
+                val query = buildPipeQuery(
+                    "episodeId" to fbEpId,
+                    "provider" to fbProvider,
+                    "category" to subTypeKey,
+                )
+                try {
+                    client.newCall(buildPipeRequest("sources", "GET", query = query)).execute().use { resp ->
+                        extractor.parseStreamsFromResponse(resp, subTypeKey, fbProvider, fbEpId, anilistId)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "fetchFallbackVideos: fallback provider '$fbProvider' sub-type '$subTypeKey' failed: ${e.message}")
+                    emptyList()
+                }
+            }
+        }
     }
 
     override fun videoListParse(response: Response): List<Video> {
@@ -1747,31 +1793,7 @@ class Miruro :
             if (shouldFetchFallbacks) {
                 val reason = if (videos.isEmpty()) "primary returned no videos" else "include all providers is enabled"
                 logD { "videoListParse: fetching ${fallbackProvidersObj.length()} fallback providers ($reason)" }
-                val fallbackResults = fallbackProvidersObj.keys().asSequence().toList().parallelCatchingFlatMapBlocking { fbProvider ->
-                    val fbSubTypes = fallbackProvidersObj.optJSONObject(fbProvider) ?: return@parallelCatchingFlatMapBlocking emptyList()
-                    val fbRequests = mutableListOf<Pair<String, String>>()
-                    for (subTypeKey in fbSubTypes.keys()) {
-                        val fbEpId = fbSubTypes.optString(subTypeKey, "")
-                        if (fbEpId.isEmpty()) continue
-                        fbRequests.add(subTypeKey to fbEpId)
-                    }
-                    logD { "videoListParse: trying fallback provider '$fbProvider' with ${fbRequests.size} sub-types" }
-                    fbRequests.parallelCatchingFlatMapBlocking { (subTypeKey, fbEpId) ->
-                        val query = buildPipeQuery(
-                            "episodeId" to fbEpId,
-                            "provider" to fbProvider,
-                            "category" to subTypeKey,
-                        )
-                        try {
-                            client.newCall(buildPipeRequest("sources", "GET", query = query)).execute().use { resp ->
-                                extractor.parseStreamsFromResponse(resp, subTypeKey, fbProvider, fbEpId, anilistId)
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "videoListParse: fallback provider '$fbProvider' sub-type '$subTypeKey' failed: ${e.message}")
-                            emptyList()
-                        }
-                    }
-                }
+                val fallbackResults = fetchFallbackVideosFromData(episodeData)
                 if (fallbackResults.isNotEmpty()) {
                     logD { "videoListParse: fallback providers returned ${fallbackResults.size} videos" }
                     videos.addAll(fallbackResults)
@@ -1791,34 +1813,16 @@ class Miruro :
         val providerName = providerDisplayName(preferences.preferredProvider)
         val qualityInt = quality.toIntOrNull() ?: 0
         val streamTypePref = preferences.preferredStreamType
-        val includeAllProviders = preferences.includeAllProviders
 
-        var working: List<Video> = this
-
-        if (!includeAllProviders) {
-            val providerFiltered = working.filter { it.quality.contains(providerName) }
-            if (providerFiltered.isNotEmpty()) {
-                logD { "video.sort: provider filter: ${working.size} → ${providerFiltered.size} (preferred=$providerName)" }
-                working = providerFiltered
-            } else {
-                logD { "video.sort: provider filter matched nothing (preferred=$providerName), keeping all ${working.size} videos" }
-            }
-        }
-
-        val filtered: List<Video> = when (streamTypePref) {
-            "hls" -> working.filter { it.quality.contains("HLS") }
-            "embed" -> working.filter { it.quality.contains("EMBED") }
-            else -> working
-        }
-
-        if (filtered.isEmpty()) {
-            logD { "video.sort: streamType='$streamTypePref' filtered out all ${working.size} videos, returning unfiltered by stream type" }
-            return working
-        }
-
-        val sorted = filtered.sortedWith(
-            compareByDescending<Video> { it.quality.contains("HLS") }
-                .thenByDescending { it.quality.contains(providerName) }
+        val sorted = this.sortedWith(
+            compareByDescending<Video> { it.quality.contains(providerName) }
+                .thenByDescending {
+                    when (streamTypePref) {
+                        "hls" -> it.quality.contains("HLS")
+                        "embed" -> it.quality.contains("EMBED")
+                        else -> !it.quality.contains("EMBED")
+                    }
+                }
                 .thenByDescending { it.quality.contains(subTypeLabel) }
                 .thenByDescending {
                     val q = QUALITY_REGEX.find(it.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
@@ -1831,7 +1835,7 @@ class Miruro :
                     }
                 },
         )
-        logD { "video.sort: $size → ${working.size} after provider filter → ${filtered.size} after streamType='$streamTypePref' filter → ${sorted.size} sorted (quality=$quality, provider=$providerName, subType=$subTypeLabel, includeAll=$includeAllProviders)" }
+        logD { "video.sort: sorted ${this.size} videos (preferred provider=$providerName, quality=$quality, subType=$subTypeLabel)" }
         return sorted
     }
 

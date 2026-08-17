@@ -103,11 +103,12 @@ data class StreamDto(
     val type: String = "",
     val url: String = "",
     val quality: String = "",
+    val server: String = "",
     val resolution: ResolutionDto? = null,
     val codec: String = "",
     val audio: String = "",
     val fansub: String = "",
-    val referer: String = "https://kwik.cx/",
+    val referer: String = "",
     val isActive: Boolean = true,
 )
 
@@ -120,6 +121,7 @@ data class ResolutionDto(
 @Serializable
 data class SubtitleDto(
     val url: String = "",
+    val file: String = "",
     val label: String = "",
     val language: String = "",
 )

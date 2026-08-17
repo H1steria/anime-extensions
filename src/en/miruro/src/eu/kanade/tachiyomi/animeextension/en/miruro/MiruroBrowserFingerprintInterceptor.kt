@@ -1,7 +1,11 @@
 package eu.kanade.tachiyomi.animeextension.en.miruro
 
+import android.util.Base64
+import android.util.Log
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
+import java.util.concurrent.TimeUnit
 
 /**
  * Browser-fingerprint request-shaping interceptor for the miruro.tv edge.
@@ -128,57 +132,108 @@ internal class MiruroBrowserFingerprintInterceptor : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
-        val isPipeContext = original.url.encodedPath.removePrefix("/").startsWith("api/")
+        val host = original.url.host
+        val isMiruroHost = host.contains("miruro.")
+        val isPipeContext = isMiruroHost && original.url.encodedPath.removePrefix("/").startsWith("api/")
+        val isMediaOrCdn = !isMiruroHost || original.url.encodedPath.endsWith(".m3u8") || original.url.encodedPath.endsWith(".ts")
         val refererPresent = original.header("Referer") != null
-
         val builder = original.newBuilder()
 
-        // ── OVERWRITE: WAF-fingerprint headers (both contexts) ──────────────
-        // These MUST be the Chrome 148 desktop values so the WAF custom-rule
-        // block does not trip, regardless of what the caller passed in.
-        builder.header("Accept-Encoding", "gzip, deflate, br")
-        builder.header("Accept-Language", "en-US,en;q=0.9")
+        // ── OVERWRITE: WAF-fingerprint headers ─────────────────────────────
         builder.header("User-Agent", Miruro.USER_AGENT)
         builder.header("Sec-Ch-Ua", SEC_CH_UA)
         builder.header("Sec-Ch-Ua-Mobile", SEC_CH_UA_MOBILE)
         builder.header("Sec-Ch-Ua-Platform", SEC_CH_UA_PLATFORM)
+        builder.header("Accept-Language", "en-US,en;q=0.9")
+
+        if (isMiruroHost) {
+            builder.header("Accept-Encoding", "gzip, deflate")
+        } else {
+            // Para CDNs y media permitir compresión estándar
+            if (original.header("Accept-Encoding") == null) {
+                builder.header("Accept-Encoding", "gzip, deflate, br")
+            }
+        }
 
         if (isPipeContext) {
-            // Pipe = same-origin CORS XHR-style fetch.
             builder.header("Sec-Fetch-Dest", "empty")
             builder.header("Sec-Fetch-Mode", "cors")
             builder.header("Sec-Fetch-Site", "same-origin")
-            builder.header("Origin", "https://www.miruro.tv")
-
-            // Fill-if-absent: body-shape defaults for an API fetch.
+            builder.header("Origin", "https://${original.url.host}")
             if (original.header("Accept") == null) {
                 builder.header("Accept", "*/*")
             }
             if (original.header("Referer") == null) {
-                builder.header("Referer", "https://www.miruro.tv/")
+                builder.header("Referer", "https://${original.url.host}/")
+            }
+        } else if (isMediaOrCdn) {
+            // Media CDN requests (CORS fetch)
+            builder.header("Sec-Fetch-Dest", "empty")
+            builder.header("Sec-Fetch-Mode", "cors")
+            builder.header("Sec-Fetch-Site", "cross-site")
+            if (original.header("Accept") == null) {
+                builder.header("Accept", "*/*")
+            }
+            if (refererPresent && original.header("Origin") == null) {
+                original.header("Referer")?.toHttpUrlOrNull()?.let {
+                    builder.header("Origin", "${it.scheme}://${it.host}")
+                }
             }
         } else {
-            // Navigate context = toplevel GET (warm-up visit).
+            // Toplevel navigation (warmup GET)
             builder.header("Sec-Fetch-Dest", "document")
             builder.header("Sec-Fetch-Mode", "navigate")
-            // A cold warmup with no caller-supplied Referer mirrors a fresh
-            // browser tab → real Chrome sends `Sec-Fetch-Site: none`. If a
-            // Referer somehow IS present (it shouldn't be after the buildPipe
-            // / warmup edits, but be correct anyway), use `same-origin`.
             builder.header("Sec-Fetch-Site", if (refererPresent) "same-origin" else "none")
-            // Do NOT set Origin — real browsers omit it on toplevel GET.
-            // Do NOT force a Referer — keep Sec-Fetch-Site: none correct.
-
-            // Fill-if-absent: body-shape defaults for a toplevel navigation.
             if (original.header("Accept") == null) {
                 builder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             }
         }
 
-        return chain.proceed(builder.build())
+        val request = builder.build()
+
+        val eParam = original.url.queryParameter("e")
+        if (!eParam.isNullOrEmpty()) {
+            val decodedJson = runCatching {
+                val cleaned = eParam.trim().removeSurrounding("\"")
+                val bytes = runCatching { Base64.decode(cleaned, Base64.URL_SAFE) }
+                    .getOrElse { Base64.decode(cleaned, Base64.DEFAULT) }
+                String(bytes, Charsets.UTF_8)
+            }.getOrDefault("<failed to decode e>")
+
+            Log.d(TAG, "==================================================")
+            Log.d(TAG, "PHASE: PIPE REQUEST -> $request.url")
+            // Log.d(TAG, "Decoded 'e' payload:\n$decodedJson")
+            Log.d(TAG, "Sent headers:")
+            request.headers.forEach { (name, value) ->
+                Log.d(TAG, "    $name: $value")
+            }
+            Log.d(TAG, "==================================================")
+        }
+
+        val startNs = System.nanoTime()
+        val response = try {
+            chain.proceed(request)
+        } catch (e: Exception) {
+            val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
+            Log.e(TAG, "Request FAILED after ${tookMs}ms: ${request.url}")
+            Log.e(TAG, "Cause: ${e.javaClass.simpleName} - ${e.message}")
+            throw e
+        }
+
+        val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
+        if (isPipeContext || isMediaOrCdn) {
+            Log.d(TAG, "HTTP RESPONSE ${response.code} (${tookMs}ms) for $request.url")
+            Log.d(TAG, "    x-obfuscated: ${response.header("x-obfuscated")}")
+            Log.d(TAG, "    content-type: ${response.header("content-type")}")
+            Log.d(TAG, "    server: ${response.header("server")}")
+        }
+
+        return response
     }
 
     private companion object {
+        private const val TAG = "MiruroFingerprint"
+
         // Brand claim exactly matching Miruro.USER_AGENT (Chrome 148 on Windows).
         // Real Chrome sends `"Not_A Brand";v="24"` (the underscore-A is literal,
         // not a typo — Chrome uses the brand-list rotation to detect header
