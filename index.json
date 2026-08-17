@@ -1914,7 +1914,7 @@
   {
     "name": "Aniyomi: Miruro.tv",
     "pkg": "eu.kanade.tachiyomi.animeextension.en.miruro",
-    "apk": "aniyomi-en.miruro-v14.6.apk",
+    "apk": "aniyomi-en.miruro-v14.6-debug.apk",
     "lang": "en",
     "code": 6,
     "version": "14.6",
