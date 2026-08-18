@@ -318,6 +318,42 @@
     ]
   },
   {
+    "name": "Aniyomi: LMAnime",
+    "pkg": "eu.kanade.tachiyomi.animeextension.all.lmanime",
+    "apk": "aniyomi-all.lmanime-v14.26.apk",
+    "lang": "all",
+    "code": 26,
+    "version": "14.26",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "LMAnime",
+        "lang": "all",
+        "id": "7296222662412524790",
+        "baseUrl": "https://lmanime.com",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: MissAV",
+    "pkg": "eu.kanade.tachiyomi.animeextension.all.missav",
+    "apk": "aniyomi-all.missav-v14.27.apk",
+    "lang": "all",
+    "code": 27,
+    "version": "14.27",
+    "nsfw": 1,
+    "sources": [
+      {
+        "name": "MissAV",
+        "lang": "all",
+        "id": "168969881246615628",
+        "baseUrl": "https://missav.live",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: MyReadingManga",
     "pkg": "eu.kanade.tachiyomi.animeextension.all.myreadingmanga",
     "apk": "aniyomi-all.myreadingmanga-v14.2.apk",
@@ -705,6 +741,24 @@
         "lang": "it",
         "id": "7246470104959245892",
         "baseUrl": "https://streamingunity.biz/it",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: Stremio",
+    "pkg": "eu.kanade.tachiyomi.animeextension.all.stremio",
+    "apk": "aniyomi-all.stremio-v14.9.apk",
+    "lang": "all",
+    "code": 9,
+    "version": "14.9",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "Stremio",
+        "lang": "all",
+        "id": "8425771932667600381",
+        "baseUrl": "https://app.strem.io/shell-v4.4",
         "versionId": 1
       }
     ]
@@ -1133,6 +1187,24 @@
         "lang": "de",
         "id": "314593699490737069",
         "baseUrl": "https://anime-stream.to",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: AnimeToast",
+    "pkg": "eu.kanade.tachiyomi.animeextension.de.animetoast",
+    "apk": "aniyomi-de.animetoast-v14.34.apk",
+    "lang": "de",
+    "code": 34,
+    "version": "14.34",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "AnimeToast",
+        "lang": "de",
+        "id": "2386616842414617638",
+        "baseUrl": "https://www.animetoast.cc",
         "versionId": 1
       }
     ]
@@ -1804,6 +1876,24 @@
     ]
   },
   {
+    "name": "Aniyomi: LuciferDonghua",
+    "pkg": "eu.kanade.tachiyomi.animeextension.en.luciferdonghua",
+    "apk": "aniyomi-en.luciferdonghua-v14.23.apk",
+    "lang": "en",
+    "code": 23,
+    "version": "14.23",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "LuciferDonghua",
+        "lang": "en",
+        "id": "1480485712825107891",
+        "baseUrl": "https://luciferdonghua.in",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: Mapple",
     "pkg": "eu.kanade.tachiyomi.animeextension.en.mapple",
     "apk": "aniyomi-en.mapple-v14.3.apk",
@@ -1817,6 +1907,24 @@
         "lang": "en",
         "id": "4419717598017841435",
         "baseUrl": "https://mapple.uk",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: Miruro.tv",
+    "pkg": "eu.kanade.tachiyomi.animeextension.en.miruro",
+    "apk": "aniyomi-en.miruro-v14.6-debug.apk",
+    "lang": "en",
+    "code": 6,
+    "version": "14.6",
+    "nsfw": 1,
+    "sources": [
+      {
+        "name": "Miruro.tv",
+        "lang": "en",
+        "id": "4467610354363305307",
+        "baseUrl": "https://www.miruro.tv",
         "versionId": 1
       }
     ]
@@ -2398,6 +2506,24 @@
     ]
   },
   {
+    "name": "Aniyomi: az-animex",
+    "pkg": "eu.kanade.tachiyomi.animeextension.es.azanimex",
+    "apk": "aniyomi-es.azanimex-v14.3.apk",
+    "lang": "es",
+    "code": 3,
+    "version": "14.3",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "az-animex",
+        "lang": "es",
+        "id": "7735188894368809510",
+        "baseUrl": "https://www.az-animex.com",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: BeatZ Anime",
     "pkg": "eu.kanade.tachiyomi.animeextension.es.beatzanime",
     "apk": "aniyomi-es.beatzanime-v14.2.apk",
@@ -2490,6 +2616,24 @@
         "lang": "es",
         "id": "1487248605713977697",
         "baseUrl": "https://www.cuevana3.eu",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: DeTodoPeliculas",
+    "pkg": "eu.kanade.tachiyomi.animeextension.es.detodopeliculas",
+    "apk": "aniyomi-es.detodopeliculas-v14.21.apk",
+    "lang": "es",
+    "code": 21,
+    "version": "14.21",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "DeTodo Peliculas",
+        "lang": "es",
+        "id": "4976463260586484820",
+        "baseUrl": "https://detodopeliculas.nu",
         "versionId": 1
       }
     ]
@@ -2873,6 +3017,24 @@
     ]
   },
   {
+    "name": "Aniyomi: MhdFlix",
+    "pkg": "eu.kanade.tachiyomi.animeextension.es.mhdflix",
+    "apk": "aniyomi-es.mhdflix-v14.22.apk",
+    "lang": "es",
+    "code": 22,
+    "version": "14.22",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "MhdFlix",
+        "lang": "es",
+        "id": "4812325950703384298",
+        "baseUrl": "https://ww1.mhdflix.com",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: MonosChinos",
     "pkg": "eu.kanade.tachiyomi.animeextension.es.monoschinos",
     "apk": "aniyomi-es.monoschinos-v14.53.apk",
@@ -3186,6 +3348,24 @@
     ]
   },
   {
+    "name": "Aniyomi: zeroanime",
+    "pkg": "eu.kanade.tachiyomi.animeextension.es.zeroanime",
+    "apk": "aniyomi-es.zeroanime-v14.13.apk",
+    "lang": "es",
+    "code": 13,
+    "version": "14.13",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "zeroanime",
+        "lang": "es",
+        "id": "2089287837152010776",
+        "baseUrl": "https://www4.zeroanime.xyz",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: Zonaleros",
     "pkg": "eu.kanade.tachiyomi.animeextension.es.zonaleros",
     "apk": "aniyomi-es.zonaleros-v14.16.apk",
@@ -3330,6 +3510,24 @@
     ]
   },
   {
+    "name": "Aniyomi: JetAnime",
+    "pkg": "eu.kanade.tachiyomi.animeextension.fr.jetanime",
+    "apk": "aniyomi-fr.jetanime-v14.22.apk",
+    "lang": "fr",
+    "code": 22,
+    "version": "14.22",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "JetAnime",
+        "lang": "fr",
+        "id": "8914615515692839881",
+        "baseUrl": "https://ssl.jetanimes.com",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: MyKdrama",
     "pkg": "eu.kanade.tachiyomi.animeextension.fr.mykdrama",
     "apk": "aniyomi-fr.mykdrama-v14.16.apk",
@@ -3451,6 +3649,24 @@
         "lang": "hi",
         "id": "2486904751081872151",
         "baseUrl": "https://yomovies.town",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: AnimeIndo",
+    "pkg": "eu.kanade.tachiyomi.animeextension.id.animeindo",
+    "apk": "aniyomi-id.animeindo-v14.28.apk",
+    "lang": "id",
+    "code": 28,
+    "version": "14.28",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "AnimeIndo",
+        "lang": "id",
+        "id": "2019695674801188380",
+        "baseUrl": "https://animeindo.skin",
         "versionId": 1
       }
     ]
@@ -3672,6 +3888,24 @@
     ]
   },
   {
+    "name": "Aniyomi: Hentai Saturn",
+    "pkg": "eu.kanade.tachiyomi.animeextension.it.hentaisaturn",
+    "apk": "aniyomi-it.hentaisaturn-v14.5.apk",
+    "lang": "it",
+    "code": 5,
+    "version": "14.5",
+    "nsfw": 1,
+    "sources": [
+      {
+        "name": "HentaiSaturn",
+        "lang": "it",
+        "id": "5832452298268268088",
+        "baseUrl": "https://www.hentaisaturn.com",
+        "versionId": 1
+      }
+    ]
+  },
+  {
     "name": "Aniyomi: Toonitalia",
     "pkg": "eu.kanade.tachiyomi.animeextension.it.toonitalia",
     "apk": "aniyomi-it.toonitalia-v14.36.apk",
@@ -3685,6 +3919,24 @@
         "lang": "it",
         "id": "8903679906651673401",
         "baseUrl": "https://toonitalia.green",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: VVVVID",
+    "pkg": "eu.kanade.tachiyomi.animeextension.it.vvvvid",
+    "apk": "aniyomi-it.vvvvid-v14.1.apk",
+    "lang": "it",
+    "code": 1,
+    "version": "14.1",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "VVVVID",
+        "lang": "it",
+        "id": "8309061778249307518",
+        "baseUrl": "https://www.vvvvid.it",
         "versionId": 1
       }
     ]
@@ -4243,6 +4495,24 @@
         "lang": "pt-BR",
         "id": "8394381853778573358",
         "baseUrl": "https://meusanimes.vip",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: Muito Hentai",
+    "pkg": "eu.kanade.tachiyomi.animeextension.pt.muitohentai",
+    "apk": "aniyomi-pt.muitohentai-v14.2.apk",
+    "lang": "pt-BR",
+    "code": 2,
+    "version": "14.2",
+    "nsfw": 1,
+    "sources": [
+      {
+        "name": "Muito Hentai",
+        "lang": "pt-BR",
+        "id": "1062606379654091909",
+        "baseUrl": "https://www.muitohentai.com",
         "versionId": 1
       }
     ]
