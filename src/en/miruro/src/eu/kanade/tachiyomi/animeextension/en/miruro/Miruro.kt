@@ -1691,16 +1691,21 @@ class Miruro :
     private fun getMeta(anilistId: Int): AnimeMeta? = animeMetaCache[anilistId]
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
+        val shortUrlRaw = if (episode.url.length > 80) episode.url.take(75) + "..." else episode.url
+        Log.d(TAG, "getVideoList: Requesting streams for ep='${episode.name}', urlRawPreview='$shortUrlRaw'")
+
         val episodeData = try {
             JSONObject(episode.url)
         } catch (e: Exception) {
             null
         }
 
+        extractor.ensureM3u8ServerRunning()
+
         val request = try {
             videoListRequest(episode)
         } catch (t: Throwable) {
-            Log.e(TAG, "getVideoList: Error building request", t)
+            Log.e(TAG, "getVideoList: EXCEPTION while building videoListRequest", t)
             throw t
         }
 

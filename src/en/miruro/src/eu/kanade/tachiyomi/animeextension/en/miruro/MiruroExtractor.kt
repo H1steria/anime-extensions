@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import aniyomi.lib.cloudflareinterceptor.CloudflareInterceptor
 import aniyomi.lib.m3u8server.M3u8Integration
+import aniyomi.lib.m3u8server.M3u8ServerManager
 import aniyomi.lib.megacloudextractor.MegaCloudExtractor
 import aniyomi.lib.omniembedextractor.OmniEmbedExtractor
 import aniyomi.lib.rapidcloudextractor.RapidCloudExtractor
@@ -11,10 +12,14 @@ import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
+import okhttp3.MediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.BufferedSource
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 
@@ -54,7 +59,7 @@ class MiruroExtractor(
     companion object {
         private const val TAG = "MiruroExtractor"
 
-        private const val PROXY_DELAY_MS = 900L
+        private const val PROXY_DELAY_MS = 500L
 
         /**
          * Host patterns that signal a Zoro-style embed (MegaCloud / RapidCloud
@@ -247,18 +252,12 @@ class MiruroExtractor(
     }
 
     /**
-     * Header-gated fallback leg: identical to [mediaClient] minus the
-     * [CloudflareInterceptor]. Supplied to [M3u8Integration] / [m3u8Integration]
-     * so that when the primary client's WebView solve fails (the canonical
-     * crash chain: `vault-99.owocdn.top` returns 403 → CloudflareInterceptor
-     * WebView solve produces no cookies → IOException propagates as 500 to
-     * mpv), the m3u8 server retries through this client with whatever browser
-     * headers the caller threaded via the proxied URL. Many header-gated
-     * CDNs serve 200 to a plain HTTP/1.1 request with the correct Referer
-     * once the WebView detour is bypassed.
+     * Cliente HTTP limpio e independiente de la app.
+     * Creado desde OkHttpClient.Builder() directamente para garantizar que NO contenga
+     * CloudflareInterceptor ni WebViewInterceptor, eliminando congelamientos de 30s.
      */
     private val mediaClientFallback by lazy {
-        client.newBuilder()
+        OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
@@ -266,6 +265,86 @@ class MiruroExtractor(
     }
 
     private val m3u8Integration by lazy { M3u8Integration(mediaClient, mediaClientFallback) }
+
+    private class JunkBytesInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val response = chain.proceed(request)
+
+            val url = request.url.toString()
+            if (!JUNK_URL_REGEX.containsMatchIn(url)) return response
+
+            val body = response.body ?: return response
+            val originalLength = body.contentLength()
+            if (originalLength != -1L && originalLength <= STRIP_BYTES) return response
+
+            val source = body.source()
+            try {
+                source.skip(STRIP_BYTES.toLong())
+            } catch (_: Exception) {
+                return response
+            }
+
+            val newBody = object : ResponseBody() {
+                override fun contentType(): MediaType? = body.contentType()
+                override fun contentLength(): Long = if (originalLength == -1L) -1L else (originalLength - STRIP_BYTES)
+                override fun source(): BufferedSource = source
+            }
+
+            return response.newBuilder().body(newBody).build()
+        }
+
+        companion object {
+            private const val STRIP_BYTES = 252
+            private val JUNK_URL_REGEX = Regex("ibyteimg\\.com|tiktokcdn\\.com", RegexOption.IGNORE_CASE)
+        }
+    }
+
+    // Cliente totalmente aislado para el servidor M3U8 local (sin heredar interceptores globales)
+    internal val m3u8Client by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .addInterceptor(JunkBytesInterceptor())
+            .build()
+    }
+
+    internal val m3u8ServerManager by lazy { M3u8ServerManager(m3u8Client) }
+
+    suspend fun ensureM3u8ServerRunning() {
+        if (m3u8ServerManager.isRunning()) return
+        try {
+            m3u8ServerManager.startServer()
+            val deadline = System.currentTimeMillis() + 2000L
+            while (!m3u8ServerManager.isRunning() && System.currentTimeMillis() < deadline) {
+                kotlinx.coroutines.delay(50L)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "M3U8 server start failed: ${e.message}")
+        }
+    }
+
+    private fun needsM3u8ServerProxy(videoUrl: String, providerKey: String): Boolean {
+        val url = videoUrl.lowercase()
+        return providerKey.equals("bee", ignoreCase = true) ||
+            url.contains("nekostream") ||
+            url.contains("vidtube") ||
+            url.contains("mewcdn") ||
+            url.contains("mewstream") ||
+            url.contains("watching.onl")
+    }
+
+    private fun proxyThroughM3u8Server(originalUrl: String): String = try {
+        if (m3u8ServerManager.isRunning()) {
+            m3u8ServerManager.processM3u8Url(originalUrl) ?: originalUrl
+        } else {
+            originalUrl
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Proxy process failed: ${e.message}")
+        originalUrl
+    }
 
     private val megaCloudExtractor by lazy {
         MegaCloudExtractor(mediaClient, headers, MEGACLOUD_API_PLACEHOLDER)
@@ -472,13 +551,20 @@ class MiruroExtractor(
                             .build()
                     }
 
-                    Log.i(TAG, "parseStreamsFromResponse: ADDING HLS stream (Watami Proxy): $qualityLabel -> $finalUrl")
+                    val requiresLocalProxy = needsM3u8ServerProxy(videoUrl, providerKey)
+                    val playableUrl = if (requiresLocalProxy) {
+                        proxyThroughM3u8Server(finalUrl)
+                    } else {
+                        finalUrl
+                    }
+
+                    Log.i(TAG, "parseStreamsFromResponse: ADDING HLS stream: $qualityLabel -> $playableUrl (ProxyApplied=$requiresLocalProxy)")
 
                     videos.add(
                         Video(
-                            finalUrl,
+                            playableUrl,
                             qualityLabel,
-                            finalUrl,
+                            playableUrl,
                             streamHeaders,
                             subtitleTracks = subtitles,
                         ),
