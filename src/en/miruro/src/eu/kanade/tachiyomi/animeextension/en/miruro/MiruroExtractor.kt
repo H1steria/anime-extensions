@@ -562,10 +562,10 @@ class MiruroExtractor(
 
                     videos.add(
                         Video(
-                            playableUrl,
-                            qualityLabel,
-                            playableUrl,
-                            streamHeaders,
+                            url = playableUrl,
+                            quality = qualityLabel,
+                            videoUrl = finalUrl,
+                            headers = streamHeaders,
                             subtitleTracks = subtitles,
                         ),
                     )

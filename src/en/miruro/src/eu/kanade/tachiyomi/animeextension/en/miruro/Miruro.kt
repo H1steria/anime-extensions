@@ -2016,23 +2016,28 @@ class Miruro :
         val streamTypePref = preferences.preferredStreamType
 
         val sorted = this.sortedWith(
-            compareByDescending<Video> { it.quality.contains(providerName) }
-                .thenByDescending {
-                    when (streamTypePref) {
-                        "hls" -> it.quality.contains("HLS")
-                        "embed" -> it.quality.contains("EMBED")
-                        else -> !it.quality.contains("EMBED")
+            // 1. Priorizar coincidencia de Sub/Dub (Dub si prefiere Dub, Sub si prefiere Sub)
+            compareByDescending<Video> { it.quality.contains(subTypeLabel, ignoreCase = true) }
+                // 2. Priorizar resolución real (1080p > 720p > 480p > 360p > MP4 > 0p)
+                //    Garantiza que el descargador elija un stream con dimensiones válidas H.264
+                .thenByDescending { video ->
+                    val q = QUALITY_REGEX.find(video.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    when {
+                        qualityInt == 0 && q > 0 -> q * 100 // 1080p -> 108000, 720p -> 72000
+                        q == qualityInt && q > 0 -> 200000
+                        q > 0 -> q * 100
+                        video.quality.contains("MP4", ignoreCase = true) -> 50000
+                        else -> 0 // Streams genéricos de 0p o corruptos quedan al final
                     }
                 }
-                .thenByDescending { it.quality.contains(subTypeLabel) }
+                // 3. Priorizar el servidor preferido por el usuario (entre calidades iguales)
+                .thenByDescending { it.quality.contains(providerName, ignoreCase = true) }
+                // 4. Priorizar HLS / MP4 sobre EMBED
                 .thenByDescending {
-                    val q = QUALITY_REGEX.find(it.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    when {
-                        qualityInt == 0 -> q
-                        q == qualityInt -> 100000
-                        q > 0 -> q
-                        it.quality.contains(quality) -> 99999
-                        else -> 0
+                    when (streamTypePref) {
+                        "hls" -> it.quality.contains("HLS") || it.quality.contains("MP4")
+                        "embed" -> it.quality.contains("EMBED")
+                        else -> !it.quality.contains("EMBED")
                     }
                 },
         )
