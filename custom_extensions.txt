@@ -1,0 +1,263 @@
+Aquí tienes la **guía maestra completa y definitiva**, paso a paso desde la creación del fork en GitHub, incluyendo la solución del archivo `.jar` de NanoHttpd, la corrección del `.gitignore`, la reconfiguración del flujo de GitHub Actions, la generación de la firma con el SHA-256 en minúsculas y la integración final con AnimeTail.
+
+---
+
+### Paso 1: Crear el Fork y Clonar el Proyecto
+
+1. Ve al repositorio original en GitHub: [https://github.com/yuzono/anime-extensions](https://github.com/yuzono/anime-extensions).
+2. Haz clic en el botón **Fork** (arriba a la derecha) para crearlo en tu cuenta (`H1steria/anime-extensions`).
+3. Abre **PowerShell** en tu computadora y clona tu nuevo fork:
+   ```powershell
+   cd D:\Escritorio
+   git clone https://github.com/H1steria/anime-extensions.git
+   cd anime-extensions
+   ```
+
+---
+
+### Paso 2: Solucionar el Error de NanoHttpd en `lib:m3u8server`
+
+El error de compilación ocurre porque JitPack no puede resolver el snapshot de NanoHttpd. Lo solucionamos descargando el `.jar` estable e integrándolo como archivo local.
+
+1. **Descargar el archivo `.jar`** directamente en la carpeta `lib/m3u8server/`:
+   * Enlace de descarga: [nanohttpd-2.3.2-efb2ebf85a2b06f7c508aba9eaad5377e3a01e81.jar](https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/nanohttpd-2.3.2-efb2ebf85a2b06f7c508aba9eaad5377e3a01e81.jar)
+   * O descárgalo con PowerShell:
+     ```powershell
+     Invoke-WebRequest -Uri "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/nanohttpd-2.3.2-efb2ebf85a2b06f7c508aba9eaad5377e3a01e81.jar" -OutFile "lib\m3u8server\nanohttpd-2.3.2-efb2ebf85a2b06f7c508aba9eaad5377e3a01e81.jar"
+     ```
+
+2. **Modificar `lib/m3u8server/build.gradle.kts`**:
+   Abre el archivo y cambia las dependencias para usar el `.jar` local:
+   ```kotlin
+   plugins {
+       id("library-common-convention")
+   }
+
+   dependencies {
+       implementation(files("nanohttpd-2.3.2-efb2ebf85a2b06f7c508aba9eaad5377e3a01e81.jar"))
+   }
+   ```
+
+---
+
+### Paso 3: Ajustar el archivo `.gitignore`
+
+Por defecto, `.gitignore` bloquea las carpetas `repo/` y `apk/`, necesarias para que GitHub Actions empaquete el repositorio.
+
+Abre el archivo `.gitignore` en la raíz y **elimina o comenta** estas dos líneas:
+```text
+# Eliminar estas dos líneas:
+repo/
+apk/
+```
+
+---
+
+### Paso 4: Reconfigurar el Flujo de CI (`build_push.yml`)
+
+Debemos adaptar `.github/workflows/build_push.yml` para que compile en tu cuenta y suba los resultados a la rama `repo` de tu propio repositorio.
+
+Edita `.github/workflows/build_push.yml` asegurándote de incluir estos cambios:
+
+1. **Desactivar el auto-bump de librerías ajenas** (línea ~61):
+   ```yaml
+         - name: Bump extensions that use a modified lib
+           if: false
+   ```
+
+2. **Quitar la condición `if: github.repository == 'yuzono/anime-extensions'`** en el paso `Upload APKs` (línea ~130).
+
+3. **Reemplazar el Job `publish` completo** al final del archivo por el siguiente:
+   ```yaml
+     publish:
+       permissions:
+         contents: write
+       name: Publish extension repo
+       needs: [prepare, build]
+       if: always()
+       runs-on: ubuntu-latest
+       timeout-minutes: 15
+       steps:
+         - name: Download APK artifacts
+           uses: actions/download-artifact@v4
+           with:
+             path: ~/apk-artifacts
+
+         - name: Set up JDK
+           uses: actions/setup-java@v4
+           with:
+             java-version: 17
+             distribution: temurin
+
+         - name: Checkout source branch
+           uses: actions/checkout@v4
+           with:
+             ref: ${{ github.ref_name }}
+             path: source_code
+             fetch-depth: 0
+
+         - name: Create repo artifacts
+           run: |
+             cd source_code
+             python ./.github/scripts/move-built-apks.py
+             INSPECTOR_LINK="$(curl -s "https://api.github.com/repos/komikku-app/aniyomi-extensions-inspector/releases/latest" | jq -r '.assets[0].browser_download_url')"
+             curl -L "$INSPECTOR_LINK" -o ./Inspector.jar
+             java -jar ./Inspector.jar "repo/apk" "output.json" "tmp"
+             python ./.github/scripts/create-repo.py
+
+         - name: Checkout repo branch
+           uses: actions/checkout@v4
+           with:
+             ref: repo
+             path: repo
+             fetch-depth: 0
+
+         - name: Merge repo
+           env:
+             DELETE: ${{ needs.prepare.outputs.delete }}
+           run: |
+             cd repo
+             if [ ! -f "index.json" ]; then
+               echo "[]" > index.json
+             fi
+             mkdir -p apk
+             mkdir -p "${{ github.workspace }}/source_code/repo/apk"
+             python "${{ github.workspace }}/source_code/.github/scripts/merge-repo.py" "$DELETE" "${{ github.workspace }}/source_code/repo"
+
+         - name: Deploy repo
+           uses: EndBug/add-and-commit@v9
+           with:
+             message: "${{ needs.prepare.outputs.latestCommitMessage }}"
+             cwd: "./repo"
+   ```
+
+4. Guarda los cambios y súbelos a `master`:
+   ```powershell
+   git add .
+   git commit -m "Configure CI and fix m3u8server dependency"
+   git push origin master
+   ```
+
+---
+
+### Paso 5: Generar la Clave de Firma y Obtener el SHA-256 en Minúsculas
+
+#### 1. Generar el Keystore (`signingkey.jks`):
+```powershell
+keytool -genkey -v -keystore signingkey.jks -storetype JKS -keyalg RSA -keysize 2048 -validity 10000 -alias mykey -storepass 123456 -keypass 123456 -dname "CN=H1steria, OU=Dev, O=H1steria, L=City, S=State, C=US"
+```
+
+#### 2. Extraer la huella SHA-256 obligatoriamente en **minúsculas y sin dos puntos**:
+> ⚠️ **ACLARACIÓN IMPORTANTE:**
+> AnimeTail **rechazará la instalación** si la huella tiene mayúsculas o dos puntos (`0C:5F:B2...`). Debe ser una cadena continua de 64 caracteres en **minúsculas** (`0cfb2...`).
+
+Ejecuta este comando para obtenerla formateada automáticamente:
+```powershell
+((keytool -list -v -keystore signingkey.jks -alias mykey -storepass 123456 | Select-String "SHA256:") -replace ".*SHA256:\s*", "" -replace ":", "").ToLower()
+```
+*(Copia el resultado de 64 caracteres; lo usaremos en el Paso 6).*
+
+#### 3. Convertir la clave a Base64:
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("signingkey.jks")) | Set-Clipboard
+```
+*(Se copiará automáticamente al portapapeles para el Paso 7).*
+
+---
+
+### Paso 6: Crear la Rama `repo` y Configurar `repo.json`
+
+1. **Crear y cambiarte a la rama `repo`:**
+   ```powershell
+   git checkout -b repo
+   ```
+
+2. **Crear el archivo `repo.json`** en la raíz del proyecto con la huella en minúsculas:
+   ```json
+   {
+     "meta": {
+       "name": "H1steria Repo",
+       "shortName": "H1steria",
+       "website": "https://github.com/H1steria/anime-extensions",
+       "signingKeyFingerprint": "pega_aqui_tu_sha256_en_minusculas_sin_dos_puntos"
+     }
+   }
+   ```
+   *(Ejemplo de fingerprint válido: `0cfb26620a681f62a26551b6a727e53d6c615837498c26971a139a1f62c8183`)*.
+
+3. **Subir la rama `repo` a GitHub:**
+   ```powershell
+   git add repo.json
+   git commit -m "Initial repo.json"
+   git push -u origin repo
+   ```
+
+4. **Regresar a la rama `master`:**
+   ```powershell
+   git checkout master
+   ```
+
+---
+
+### Paso 7: Configurar Permisos y Secrets en GitHub
+
+1. **Permisos de escritura para GitHub Actions:**
+   * Ve a tu repositorio en GitHub: **Settings -> Actions -> General**.
+   * En **Workflow permissions**, selecciona **Read and write permissions**.
+   * Guarda los cambios (**Save**).
+
+2. **Agregar los Secrets:**
+   * Ve a **Settings -> Secrets and variables -> Actions -> New repository secret**.
+   * Agrega las siguientes 4 variables:
+
+| Name | Secret |
+| :--- | :--- |
+| **`SIGNING_KEY`** | *(Pega el texto Base64 copiado en el Paso 5.3)* |
+| **`ALIAS`** | `mykey` |
+| **`KEY_STORE_PASSWORD`** | `123456` |
+| **`KEY_PASSWORD`** | `123456` |
+
+---
+
+### Paso 8: Ciclo de Desarrollo y Prueba en AnimeTail
+
+Cada vez que vayas a realizar modificaciones en una extensión (por ejemplo, `Miruro`):
+
+1. **Haz tus cambios de código** en `src/en/miruro/...`
+2. **Incrementa el número de versión** en `src/en/miruro/build.gradle`:
+   ```groovy
+   ext {
+       extName = 'Miruro'
+       pkgVersionCode = 2 // <-- Sube este número (ej: de 1 a 2)
+   }
+   ```
+3. **Sube los cambios a GitHub:**
+   ```powershell
+   git add .
+   git commit -m "Update Miruro extractor"
+   git push origin master
+   ```
+4. **GitHub Actions compilará**, firmará el APK con tu clave y actualizará el catálogo en la rama `repo`.
+
+---
+
+### Paso 9: Conectar tu Repositorio en AnimeTail
+
+1. Abre **AnimeTail**.
+2. Ve a **Ajustes -> Explorar / Fuentes -> Repositorios de extensiones**.
+3. Añade tu repositorio pegando la URL raw de tu `repo.json`:
+   ```text
+   https://raw.githubusercontent.com/H1steria/anime-extensions/repo/repo.json
+   ```
+4. Ve a la pestaña **Explorar -> Extensiones**: tu extensión aparecerá lista para instalarse con un clic, firmada y funcionando sin desaparecer.
+
+
+Comando para debug en powershell:
+cls; adb logcat -c; adb logcat --pid=$(adb shell pidof -s com.dark.animetailv2)
+cls; adb logcat -c; adb logcat --pid=$(adb shell pidof -s com.dark.animetailv2.dev)
+
+cls; adb logcat -c; adb logcat --pid=$(adb shell pidof -s com.dark.animetailv2) -s Miruro:I MiruroExtractor:D OkHttp:I ba:D mpv:W *:E
+
+cls; adb logcat -c; adb logcat --pid=$(adb shell pidof -s com.dark.animetailv2) -s Miruro:I Miruro:D MiruroExtractor:I MiruroExtractor:D MiruroFingerprint:I MiruroFingerprint:D javaClass.simpleName:E ba:D mpv:W M3u8HttpServer:D OmniEmbedExtractor:D OkHttp:I *:E
+
+.\gradlew :src:en:miruro:assembleDebug
