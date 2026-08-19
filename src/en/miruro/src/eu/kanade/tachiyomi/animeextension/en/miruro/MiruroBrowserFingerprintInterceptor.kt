@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.animeextension.en.miruro
 
+import android.util.Log
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -131,12 +132,26 @@ internal class MiruroBrowserFingerprintInterceptor : Interceptor {
         val isPipeContext = original.url.encodedPath.removePrefix("/").startsWith("api/")
         val refererPresent = original.header("Referer") != null
 
+        val shortUrl1 = original.url.toString().let { if (it.length > 80) it.take(75) + "..." else it }
+        val originalEnc = original.header("Accept-Encoding") ?: "<absent>"
+        val originalUA = original.header("User-Agent") ?: "<absent>"
+
+        Log.i(
+            TAG,
+            "[FORENSIC][FINGERPRINT] Outgoing request -> isPipe=$isPipeContext | initial Accept-Encoding='$originalEnc' | initial User-Agent='$originalUA' | url=$shortUrl1",
+        )
+
         val builder = original.newBuilder()
 
-        // ── OVERWRITE: WAF-fingerprint headers (both contexts) ──────────────
-        // These MUST be the Chrome 148 desktop values so the WAF custom-rule
-        // block does not trip, regardless of what the caller passed in.
-        builder.header("Accept-Encoding", "gzip, deflate, br")
+        val host = original.url.host
+        val isMiruroHost = host.contains("miruro.", ignoreCase = true)
+
+        // If it is NOT a Miruro host (external CDNs, AniList, status page, etc.),
+        // let the request proceed with its headers intact
+        if (!isMiruroHost) {
+            return chain.proceed(original)
+        }
+
         builder.header("Accept-Language", "en-US,en;q=0.9")
         builder.header("User-Agent", Miruro.USER_AGENT)
         builder.header("Sec-Ch-Ua", SEC_CH_UA)
@@ -144,38 +159,43 @@ internal class MiruroBrowserFingerprintInterceptor : Interceptor {
         builder.header("Sec-Ch-Ua-Platform", SEC_CH_UA_PLATFORM)
 
         if (isPipeContext) {
-            // Pipe = same-origin CORS XHR-style fetch.
             builder.header("Sec-Fetch-Dest", "empty")
             builder.header("Sec-Fetch-Mode", "cors")
             builder.header("Sec-Fetch-Site", "same-origin")
-            builder.header("Origin", "https://www.miruro.tv")
+            builder.header("Origin", "https://${original.url.host}")
 
-            // Fill-if-absent: body-shape defaults for an API fetch.
             if (original.header("Accept") == null) {
                 builder.header("Accept", "*/*")
             }
-            if (original.header("Referer") == null) {
-                builder.header("Referer", "https://www.miruro.tv/")
+            if (!refererPresent) {
+                builder.header("Referer", "https://${original.url.host}/")
             }
         } else {
-            // Navigate context = toplevel GET (warm-up visit).
             builder.header("Sec-Fetch-Dest", "document")
             builder.header("Sec-Fetch-Mode", "navigate")
-            // A cold warmup with no caller-supplied Referer mirrors a fresh
-            // browser tab → real Chrome sends `Sec-Fetch-Site: none`. If a
-            // Referer somehow IS present (it shouldn't be after the buildPipe
-            // / warmup edits, but be correct anyway), use `same-origin`.
             builder.header("Sec-Fetch-Site", if (refererPresent) "same-origin" else "none")
-            // Do NOT set Origin — real browsers omit it on toplevel GET.
-            // Do NOT force a Referer — keep Sec-Fetch-Site: none correct.
 
-            // Fill-if-absent: body-shape defaults for a toplevel navigation.
             if (original.header("Accept") == null) {
                 builder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             }
         }
 
-        return chain.proceed(builder.build())
+        val builtRequest = builder.build()
+        val shortUrl = builtRequest.url.toString().let { if (it.length > 80) it.take(75) + "..." else it }
+        val reqEnc = builtRequest.header("Accept-Encoding") ?: "<absent>"
+        val reqUA = builtRequest.header("User-Agent") ?: "<absent>"
+        Log.d(TAG, "[FORENSIC][FINGERPRINT] Network headers applied -> Accept-Encoding='$reqEnc' | User-Agent='$reqUA'")
+
+        val response = chain.proceed(builtRequest)
+        val respEnc = response.header("Content-Encoding") ?: "<absent>"
+        val respType = response.header("Content-Type") ?: "<absent>"
+        val respObf = response.header("x-obfuscated") ?: "<absent>"
+
+        android.util.Log.i(
+            TAG,
+            "[FORENSIC][FINGERPRINT] Network response received -> HTTP ${response.code} | Content-Encoding='$respEnc' | Content-Type='$respType' | x-obfuscated='$respObf' for $shortUrl",
+        )
+        return response
     }
 
     private companion object {
@@ -186,5 +206,7 @@ internal class MiruroBrowserFingerprintInterceptor : Interceptor {
         private const val SEC_CH_UA = "\"Chromium\";v=\"148\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"148\""
         private const val SEC_CH_UA_MOBILE = "?0"
         private const val SEC_CH_UA_PLATFORM = "\"Windows\""
+
+        private const val TAG = "MiruroFingerprint"
     }
 }

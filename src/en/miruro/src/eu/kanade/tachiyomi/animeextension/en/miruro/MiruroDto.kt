@@ -107,7 +107,7 @@ data class StreamDto(
     val codec: String = "",
     val audio: String = "",
     val fansub: String = "",
-    val referer: String = "https://kwik.cx/",
+    val referer: String = "",
     val isActive: Boolean = true,
 )
 

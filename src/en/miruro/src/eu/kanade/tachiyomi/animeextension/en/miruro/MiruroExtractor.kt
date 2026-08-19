@@ -13,6 +13,7 @@ import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
@@ -27,8 +28,33 @@ class MiruroExtractor(
     private val resolveDisplayName: (String) -> String,
 ) {
 
+    private fun decompressPayload(rawBytes: ByteArray, contentEncoding: String): ByteArray {
+        if (rawBytes.isEmpty()) return rawBytes
+        val isGzip = contentEncoding.equals("gzip", true) ||
+            (rawBytes.size >= 2 && rawBytes[0] == 0x1F.toByte() && rawBytes[1] == 0x8B.toByte())
+        if (isGzip) {
+            return runCatching {
+                GZIPInputStream(java.io.ByteArrayInputStream(rawBytes)).use { it.readBytes() }
+            }.getOrDefault(rawBytes)
+        }
+        val isBrotli = contentEncoding.equals("br", true) ||
+            (rawBytes.isNotEmpty() && rawBytes[0] == 0x1B.toByte())
+        if (isBrotli) {
+            val decompressed = runCatching {
+                val clazz = Class.forName("org.brotli.dec.BrotliInputStream")
+                val stream = clazz.getConstructor(java.io.InputStream::class.java)
+                    .newInstance(java.io.ByteArrayInputStream(rawBytes)) as java.io.InputStream
+                stream.use { it.readBytes() }
+            }.getOrNull()
+            if (decompressed != null) return decompressed
+        }
+        return rawBytes
+    }
+
     companion object {
         private const val TAG = "MiruroExtractor"
+
+        private const val PROXY_DELAY_MS = 900L
 
         /**
          * Host patterns that signal a Zoro-style embed (MegaCloud / RapidCloud
@@ -68,8 +94,7 @@ class MiruroExtractor(
          * and relays it back, bypassing CORS and header-gating that would
          * 403 a direct fetch from outside the browser.
          */
-        private const val PROXY_A = "https://vault01.ultracloud.cc/"
-        private const val PROXY_B = "https://vault02.ultracloud.cc/"
+        private const val PROXY = "https://s1.watami.win/"
 
         /**
          * FNV-1a 32-bit hash constants (IETF RFC 7020).
@@ -134,15 +159,69 @@ class MiruroExtractor(
             proxyKey: ByteArray,
             proxySeed: String,
         ): String {
-            if (proxyKey.isEmpty()) return streamUrl
-            val proxyBase = if (fnv1aMod2(proxySeed) == 0) PROXY_A else PROXY_B
-            val obfUrl = xorEncode(streamUrl, proxyKey)
-            val obfReferer = xorEncode(referer, proxyKey)
-            return "${proxyBase}$obfUrl~$obfReferer/pl.m3u8"
+            if (proxyKey.isEmpty()) {
+                Log.w(TAG, "buildProxiedUrl: Proxy key is empty; cannot build Watami URL")
+                return ""
+            }
+
+            val encodedStream = xorEncode(streamUrl, proxyKey)
+            val encodedReferer = xorEncode(referer, proxyKey)
+            val result = "${PROXY}$encodedStream~$encodedReferer/pl.m3u8"
+
+            Log.d(TAG, "buildProxiedUrl: streamUrl='$streamUrl', referer='$referer' -> proxiedUrl='$result'")
+            return result
         }
     }
 
     private val embedExtractor by lazy { OmniEmbedExtractor(client, headers) }
+
+    private fun verifyProxyManifest(proxyUrl: String): Boolean {
+        Log.i(TAG, "verifyProxyManifest: [1/3] Waiting $PROXY_DELAY_MS ms before querying Watami proxy...")
+        waitBeforeProxyRequest()
+
+        val proxyHeaders = headers.newBuilder()
+            .set("User-Agent", Miruro.USER_AGENT)
+            .set("Accept", "*/*")
+            .set("Referer", "https://strm.cx/")
+            .set("Origin", "https://strm.cx")
+            .build()
+
+        val reqHeadersStr = proxyHeaders.joinToString(" | ") { "${it.first}: ${it.second}" }
+        Log.i(TAG, "verifyProxyManifest: [2/3] GET $proxyUrl | Headers: [$reqHeadersStr]")
+
+        return try {
+            client.newCall(
+                Request.Builder()
+                    .url(proxyUrl)
+                    .headers(proxyHeaders)
+                    .get()
+                    .build(),
+            ).execute().use { response ->
+                val code = response.code
+                val respHeadersStr = response.headers.joinToString(" | ") { "${it.first}=${it.second}" }
+                val body = response.body?.string().orEmpty()
+                val hasExtM3u = body.contains("#EXTM3U")
+                val valid = code == 200 && hasExtM3u
+
+                Log.i(
+                    TAG,
+                    "verifyProxyManifest: [3/3] Result: HTTP $code, bodyLen=${body.length}, containsExtM3u=$hasExtM3u, isValid=$valid | Headers: [$respHeadersStr]",
+                )
+                if (body.isNotEmpty()) {
+                    Log.d(TAG, "verifyProxyManifest: body preview (first 250 characters): ${body.take(250).replace("\n", "\\n")}")
+                }
+
+                if (!valid) {
+                    Log.w(TAG, "verifyProxyManifest: Invalid or rejected manifest (HTTP $code) for url: $proxyUrl")
+                }
+
+                valid
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "verifyProxyManifest: EXCEPTION while verifying proxy at $proxyUrl: ${error.javaClass.simpleName}: ${error.message}", error)
+            false
+        }
+    }
 
     /**
      * Dedicated HTTP/1.1 client for media / m3u8 fetches. Some provider CDNs
@@ -161,7 +240,7 @@ class MiruroExtractor(
     private val mediaClient by lazy {
         client.newBuilder()
             .readTimeout(30, TimeUnit.SECONDS)
-            .protocols(listOf(Protocol.HTTP_1_1))
+            .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .addInterceptor(CloudflareInterceptor(client))
             .build()
     }
@@ -180,7 +259,7 @@ class MiruroExtractor(
     private val mediaClientFallback by lazy {
         client.newBuilder()
             .readTimeout(30, TimeUnit.SECONDS)
-            .protocols(listOf(Protocol.HTTP_1_1))
+            .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .build()
     }
 
@@ -194,36 +273,85 @@ class MiruroExtractor(
         RapidCloudExtractor(mediaClient, headers, preferences)
     }
 
+    private fun waitBeforeProxyRequest() {
+        try {
+            Thread.sleep(PROXY_DELAY_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
     fun providerDisplayName(key: String): String = resolveDisplayName(key)
 
-    fun decryptResponse(response: Response): String {
-        val obfuscated = response.header("x-obfuscated") ?: "1"
-        val bodyStr = response.body?.string()?.trim() ?: ""
-
-        if (obfuscated != "2") {
-            Log.d(TAG, "decryptResponse: not obfuscated (header=$obfuscated), ${bodyStr.length} chars")
-            return bodyStr
+    private fun resolveDynamicReferer(streamUrl: String, rawReferer: String): String {
+        val trimmed = rawReferer.trim()
+        if (trimmed.isNotEmpty()) {
+            val parsedRef = trimmed.toHttpUrlOrNull()
+            if (parsedRef != null) {
+                return if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+            }
+            return trimmed
         }
 
-        if (bodyStr.isEmpty()) {
-            Log.e(TAG, "Empty response body from server")
+        val streamHttpUrl = streamUrl.toHttpUrlOrNull()
+        val host = streamHttpUrl?.host?.lowercase().orEmpty()
+
+        if (host.contains("owocdn.top")) {
+            return KWIK_DEFAULT_REFERER
+        }
+        if (host.contains("miruro")) {
+            return "${mirrorBaseUrl.trimEnd('/')}/"
+        }
+
+        return if (streamHttpUrl != null) {
+            "${streamHttpUrl.scheme}://${streamHttpUrl.host}/"
+        } else {
+            "${mirrorBaseUrl.trimEnd('/')}/"
+        }
+    }
+
+    fun decryptResponse(response: Response): String {
+        if (!response.isSuccessful || response.code == 444 || response.code >= 500) {
+            Log.w(TAG, "decryptResponse: Response HTTP ${response.code}, discarding response")
             return ""
         }
 
+        val obfuscated = response.header("x-obfuscated") ?: "1"
+        val bodyStr = response.body?.string()?.trim() ?: ""
+
+        if (bodyStr.isEmpty() || bodyStr.startsWith("<")) {
+            Log.w(TAG, "decryptResponse: Empty body or HTML error page (len=${bodyStr.length})")
+            return ""
+        }
+
+        if (obfuscated != "2") {
+            return bodyStr
+        }
+
         return try {
-            val decoded = Base64.decode(bodyStr, Base64.URL_SAFE)
-            val data = decoded
+            val cleaned = bodyStr.removeSurrounding("\"").trim()
+            val decoded = runCatching { Base64.decode(cleaned, Base64.URL_SAFE) }
+                .recoverCatching { Base64.decode(cleaned, Base64.DEFAULT) }
+                .getOrElse { Base64.decode(cleaned, Base64.NO_PADDING or Base64.URL_SAFE) }
+
+            val data = decoded.copyOf()
             for (i in data.indices) {
                 data[i] = (data[i].toInt() xor pipeKey[i % pipeKey.size].toInt()).toByte()
             }
 
-            val result = GZIPInputStream(java.io.ByteArrayInputStream(data)).use { gzipStream ->
-                gzipStream.bufferedReader(Charsets.UTF_8).readText()
+            val isGzip = data.size >= 2 && data[0] == 0x1F.toByte() && data[1] == 0x8B.toByte()
+            val result = if (isGzip) {
+                GZIPInputStream(java.io.ByteArrayInputStream(data)).use { gzipStream ->
+                    gzipStream.bufferedReader(Charsets.UTF_8).readText()
+                }
+            } else {
+                String(data, Charsets.UTF_8)
             }
-            Log.d(TAG, "decryptResponse: decrypted ${bodyStr.length} → ${result.length} chars")
+
+            Log.d(TAG, "decryptResponse: Payload decrypted SUCCESSFULLY (${result.length} chars)")
             result
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to decrypt response from server: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "decryptResponse: ERROR during decryption: ${e.javaClass.simpleName}: ${e.message}", e)
             ""
         }
     }
@@ -235,26 +363,39 @@ class MiruroExtractor(
         episodeId: String = "",
         anilistId: String = "",
     ): List<Video> {
+        Log.i(TAG, "parseStreamsFromResponse: Processing response for provider='$providerKey', subType='$subType', episodeId='$episodeId', anilistId='$anilistId'")
+
         val json = try {
             response.use(::decryptResponse)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to decrypt stream response: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "parseStreamsFromResponse: Exception during decryptResponse", e)
+            return emptyList()
+        }
+
+        if (json.isEmpty()) {
+            Log.w(TAG, "parseStreamsFromResponse: Decrypted JSON is empty, returning empty list")
             return emptyList()
         }
 
         val sourcesDto = try {
             SourcesResponseDto.parse(json)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse sources response: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "parseStreamsFromResponse: Error parsing JSON to SourcesResponseDto: ${json.take(400)}", e)
             return emptyList()
+        }
+
+        Log.i(
+            TAG,
+            "parseStreamsFromResponse: SourcesResponseDto parsed -> ${sourcesDto.streams.size} streams, ${sourcesDto.subtitles.size} subtitles",
+        )
+        sourcesDto.streams.forEachIndexed { i, s ->
+            Log.i(TAG, "  stream[$i]: type='${s.type}', quality='${s.quality}', codec='${s.codec}', audio='${s.audio}', url='${s.url}', referer='${s.referer}'")
         }
 
         if (sourcesDto.streams.isEmpty()) {
-            Log.w(TAG, "Empty streams array in response (subType=$subType, provider=$providerKey)")
+            Log.w(TAG, "[FORENSIC] parseStreamsFromResponse: Empty 'streams' array in provider response (provider='$providerKey', subType='$subType', episodeId='$episodeId')")
             return emptyList()
         }
-
-        Log.d(TAG, "parseStreamsFromResponse: ${sourcesDto.streams.size} streams, ${sourcesDto.subtitles.size} subtitles (subType=$subType, provider=$providerKey)")
 
         val subTypeLabel = when (subType) {
             "sub" -> "Sub"
@@ -272,73 +413,132 @@ class MiruroExtractor(
             }
 
         val videos = mutableListOf<Video>()
-
-        // FNV hash seed for proxy server selection: `${episodeId}|${anilistId}`,
-        // matching the frontend's `Xb(episodeId, anilistId)` logic.
         val proxySeed = "$episodeId|$anilistId"
 
-        for (stream in sourcesDto.streams) {
-            if (stream.url.isEmpty()) continue
+        for ((index, stream) in sourcesDto.streams.withIndex()) {
+            if (stream.url.isEmpty()) {
+                Log.w(TAG, "parseStreamsFromResponse: stream[$index] has empty URL, ignoring")
+                continue
+            }
 
-            val qualityInt = stream.quality.toIntOrNull() ?: 0
+            val qualityInt = stream.quality.filter { it.isDigit() }.toIntOrNull()
+                ?: stream.resolution?.height?.takeIf { it > 0 }
+                ?: 0
             val width = stream.resolution?.width ?: 0
             val height = stream.resolution?.height ?: 0
-
             val streamTypeLabel = stream.type.uppercase()
 
             val qualityLabel = buildString {
                 if (providerKey.isNotEmpty()) append("${providerDisplayName(providerKey)} - ")
-                append("${qualityInt}p")
-                if (subTypeLabel != null) append(" $subTypeLabel")
-                if (width > 0 && height > 0) append(" - ${width}x$height")
-                if (stream.codec.isNotEmpty()) append(" ${stream.codec}")
-                if (stream.audio.isNotEmpty()) append(" ${stream.audio}")
-                if (stream.fansub.isNotEmpty()) append(" ${stream.fansub}")
-                append(" $streamTypeLabel")
-            }
+                if (qualityInt > 0) append("${qualityInt}p ")
+                if (subTypeLabel != null) append("$subTypeLabel ")
+                if (width > 0 && height > 0) append("(${width}x$height) ")
+                if (stream.codec.isNotEmpty()) append("${stream.codec} ")
+                if (stream.audio.isNotEmpty()) append("${stream.audio} ")
+                if (stream.fansub.isNotEmpty()) append("${stream.fansub} ")
+                append(streamTypeLabel)
+            }.trim()
+
+            Log.d(TAG, "parseStreamsFromResponse: stream#$index type=${stream.type} label=$qualityLabel url=${stream.url}")
 
             when (stream.type.lowercase()) {
                 "hls" -> {
-                    val proxyReferer = stream.referer.trim().ifEmpty { KWIK_DEFAULT_REFERER }
-                    val proxiedUrl = buildProxiedUrl(
-                        streamUrl = stream.url,
-                        referer = proxyReferer,
-                        proxyKey = proxyKey,
-                        proxySeed = proxySeed,
-                    )
-                    if (proxiedUrl != stream.url) {
-                        Log.d(TAG, "HLS proxy-wrapped: ${stream.url.take(60)} → ${proxiedUrl.take(60)}")
+                    val rawUrl = stream.url.trim()
+                    val videoUrl = when {
+                        rawUrl.startsWith("//") -> "https:$rawUrl"
+                        !rawUrl.startsWith("http", ignoreCase = true) -> "https://$rawUrl"
+                        else -> rawUrl
                     }
-                    val proxyHeaders = headers.newBuilder()
-                        .set("Referer", "${mirrorBaseUrl.trimEnd('/')}/")
-                        .set("Origin", mirrorBaseUrl.trimEnd('/'))
-                        .build()
+
+                    val targetReferer = resolveDynamicReferer(videoUrl, stream.referer)
+                    val proxiedUrl = buildProxiedUrl(videoUrl, targetReferer, proxyKey, proxySeed)
+                    val finalUrl = proxiedUrl.ifEmpty { videoUrl }
+
+                    val streamHeaders = if (finalUrl.contains("watami.win")) {
+                        headers.newBuilder()
+                            .set("User-Agent", Miruro.USER_AGENT)
+                            .set("Accept", "*/*")
+                            .set("Referer", "https://strm.cx/")
+                            .set("Origin", "https://strm.cx")
+                            .build()
+                    } else {
+                        headers.newBuilder()
+                            .set("User-Agent", Miruro.USER_AGENT)
+                            .set("Accept", "*/*")
+                            .set("Accept-Language", "en-US,en;q=0.9")
+                            .set("Referer", targetReferer)
+                            .build()
+                    }
+
+                    Log.i(TAG, "parseStreamsFromResponse: ADDING HLS stream (Watami Proxy): $qualityLabel -> $finalUrl")
+
                     videos.add(
-                        Video(proxiedUrl, qualityLabel, proxiedUrl, proxyHeaders, subtitleTracks = subtitles),
+                        Video(
+                            finalUrl,
+                            qualityLabel,
+                            finalUrl,
+                            streamHeaders,
+                            subtitleTracks = subtitles,
+                        ),
+                    )
+                }
+                "mp4" -> {
+                    val rawUrl = stream.url.trim()
+                    val videoUrl = when {
+                        rawUrl.startsWith("//") -> "https:$rawUrl"
+                        !rawUrl.startsWith("http", ignoreCase = true) -> "https://$rawUrl"
+                        else -> rawUrl
+                    }
+
+                    val targetReferer = resolveDynamicReferer(videoUrl, stream.referer)
+                    val streamHeaders = headers.newBuilder()
+                        .set("User-Agent", Miruro.USER_AGENT)
+                        .set("Accept", "*/*")
+                        .set("Accept-Language", "en-US,en;q=0.9")
+                        .set("Referer", targetReferer)
+                        .build()
+
+                    Log.i(TAG, "parseStreamsFromResponse: ADDING direct MP4 stream: $qualityLabel -> $videoUrl (Referer: $targetReferer)")
+
+                    videos.add(
+                        Video(
+                            videoUrl,
+                            qualityLabel,
+                            videoUrl,
+                            streamHeaders,
+                            subtitleTracks = subtitles,
+                        ),
                     )
                 }
                 "embed" -> {
-                    Log.d(TAG, "parseStreams: extracting embed: ${stream.url.take(80)}")
+                    if (stream.url.contains("kwik.cx")) {
+                        Log.d(TAG, "parseStreamsFromResponse: Skipping kwik.cx embed")
+                        continue
+                    }
+                    Log.i(TAG, "parseStreamsFromResponse: Extracting embed: ${stream.url}")
                     val embedVideos = extractPreRoutedEmbed(
                         embedUrl = stream.url,
                         qualityLabel = qualityLabel,
                         subtitles = subtitles,
                     )
                     if (embedVideos.isNotEmpty()) {
+                        Log.i(TAG, "parseStreamsFromResponse: Embed extracted successfully (${embedVideos.size} videos found)")
                         videos.addAll(embedVideos)
                     } else {
-                        Log.w(TAG, "Failed to extract from embed: ${stream.url.take(80)}")
+                        Log.w(TAG, "parseStreamsFromResponse: Embed extraction failed for: ${stream.url}")
                     }
                 }
                 else -> {
-                    Log.w(TAG, "Unknown stream type '${stream.type}', skipping: ${stream.url.take(80)}")
+                    Log.w(TAG, "parseStreamsFromResponse: Unknown stream type '${stream.type}', skipping: ${stream.url}")
                 }
             }
         }
 
-        val proxied = m3u8Integration.processVideoList(videos)
-        Log.d(TAG, "parseStreamsFromResponse: built ${videos.size} videos from ${sourcesDto.streams.size} streams, ${proxied.size} proxied via m3u8server")
-        return proxied
+        Log.i(
+            TAG,
+            "parseStreamsFromResponse: FINISHED -> Returning ${videos.size} valid videos out of ${sourcesDto.streams.size} received",
+        )
+        return videos
     }
 
     private fun extractPreRoutedEmbed(
