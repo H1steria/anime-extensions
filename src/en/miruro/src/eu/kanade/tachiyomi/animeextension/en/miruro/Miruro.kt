@@ -55,6 +55,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 class Miruro :
@@ -90,6 +91,9 @@ class Miruro :
 
     override val client: OkHttpClient =
         super.client.newBuilder()
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
             .addNetworkInterceptor(MiruroBrowserFingerprintInterceptor())
             .addNetworkInterceptor(MiruroDebugInterceptor())
             .build()
@@ -740,7 +744,7 @@ class Miruro :
             "Cog (Hard Sub, Embed)",
         )
         private val DEFAULT_PROVIDER_VALUES = listOf("kiwi", "bee", "bonk", "ally", "moo", "hop", "pewe", "nun", "bun", "twin", "cog")
-        private const val PREF_PROVIDER_DEFAULT = "kiwi"
+        private const val PREF_PROVIDER_DEFAULT = "bee"
 
         private val KNOWN_DISPLAY_NAMES = mapOf(
             "kiwi" to "AnimePahe",
@@ -1687,41 +1691,73 @@ class Miruro :
     private fun getMeta(anilistId: Int): AnimeMeta? = animeMetaCache[anilistId]
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val shortUrlRaw = if (episode.url.length > 80) episode.url.take(75) + "..." else episode.url
-        Log.d(TAG, "getVideoList: Requesting streams for ep='${episode.name}', urlRawPreview='$shortUrlRaw'")
+        val episodeData = try {
+            JSONObject(episode.url)
+        } catch (e: Exception) {
+            null
+        }
+
         val request = try {
             videoListRequest(episode)
         } catch (t: Throwable) {
-            Log.e(TAG, "getVideoList: EXCEPTION while building videoListRequest", t)
+            Log.e(TAG, "getVideoList: Error building request", t)
             throw t
         }
 
-        val requestUrlStr = request.url.toString()
-        val shortRequestUrl = if (requestUrlStr.length > 100) {
-            requestUrlStr.take(requestUrlStr.indexOf("?e=").takeIf { it > 0 }?.plus(15) ?: 95) + "..."
-        } else {
-            requestUrlStr
+        var primaryResponse: Response? = null
+        try {
+            primaryResponse = client.newCall(request).await()
+        } catch (e: Exception) {
+            Log.w(TAG, "getVideoList: Primary provider timed out or failed (${e.message}), skipping to fallbacks...")
         }
-        Log.d(TAG, "getVideoList: Executing HTTP request -> $shortRequestUrl")
+
         return try {
-            client.newCall(request).await().use { response ->
-                val code = response.code
-                val headersDump = response.headers.joinToString(" | ") { "${it.first}: ${it.second}" }
-                Log.d(TAG, "getVideoList: HTTP response received code=$code, headers=[$headersDump]")
-
-                if (!response.isSuccessful) {
-                    val errorBodyPeek = runCatching {
-                        response.peekBody(500).string().replace("\n", " ")
-                    }.getOrNull() ?: "<unreadable body>"
-                    Log.e(TAG, "getVideoList: HTTP error $code in sources pipe! Preview: $errorBodyPeek")
+            if (primaryResponse != null) {
+                primaryResponse.use { resp ->
+                    videoListParse(resp).sort()
                 }
+            } else if (episodeData != null) {
+                val fallbackVideos = mutableListOf<Video>()
+                val fallbackProvidersObj = episodeData.optJSONObject("fallbackProviders")
+                val anilistId = episodeData.optString("anilistId", "")
 
-                val videos = videoListParse(response)
-                Log.d(TAG, "getVideoList: videoListParse returned ${videos.size} videos. Applying sort()...")
-                videos.sort()
+                if (fallbackProvidersObj != null) {
+                    for (fbProvider in fallbackProvidersObj.keys().asSequence().toList()) {
+                        val fbSubTypes = fallbackProvidersObj.optJSONObject(fbProvider) ?: continue
+                        for (subTypeKey in fbSubTypes.keys().asSequence().toList()) {
+                            val fbEpId = fbSubTypes.optString(subTypeKey, "")
+                            if (fbEpId.isEmpty()) continue
+                            try {
+                                val query = buildPipeQuery(
+                                    "episodeId" to fbEpId,
+                                    "provider" to fbProvider,
+                                    "category" to subTypeKey,
+                                    "anilistId" to anilistId.toIntOrNull()?.takeIf { it > 0 },
+                                    "ttl" to 86400,
+                                )
+                                client.newCall(buildPipeRequest("sources", "GET", query = query)).execute().use { resp ->
+                                    if (resp.isSuccessful && resp.code !in listOf(444, 500, 502, 520)) {
+                                        val results = extractor.parseStreamsFromResponse(resp, subTypeKey, fbProvider, fbEpId, anilistId)
+                                        fallbackVideos.addAll(results)
+                                    }
+                                }
+                                if (fallbackVideos.isNotEmpty() && !preferences.includeAllSubTypes) break
+                            } catch (err: Exception) {
+                                Log.w(TAG, "Error fetching fallback $fbProvider: ${err.message}")
+                            }
+                        }
+                        if (fallbackVideos.isNotEmpty() && !preferences.includeAllProviders) break
+                    }
+                }
+                if (fallbackVideos.isEmpty()) {
+                    throw IOException("No available streams from any provider")
+                }
+                fallbackVideos.sort()
+            } else {
+                emptyList()
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "getVideoList: EXCEPTION during network call or video parsing: ${e.javaClass.simpleName}: ${e.message}", e)
+            Log.e(TAG, "getVideoList: Fatal error retrieving videos", e)
             throw e
         }
     }

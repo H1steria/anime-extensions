@@ -239,7 +239,8 @@ class MiruroExtractor(
      */
     private val mediaClient by lazy {
         client.newBuilder()
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .addInterceptor(CloudflareInterceptor(client))
             .build()
@@ -258,7 +259,8 @@ class MiruroExtractor(
      */
     private val mediaClientFallback by lazy {
         client.newBuilder()
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .build()
     }
